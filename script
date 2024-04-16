@@ -1,0 +1,126 @@
+// Скрипт моніторингу облікових записів Google Ads розроблений агенцією https://ppc.rocks
+// Інструкція по скрипту https://youtu.be/3t9k9AHsd3M
+// Чат з Google Shopping https://t.me/Google_Shopping
+// Підписуйся на канал >> https://t.me/neskromnyy_marketolog << тут все про Google Shopping
+// Є ідеї по цьому скрипту чи взагалі по скриптам, зв'язок https://t.me/xvoloshinx
+
+function main() {
+  const sheet_url = "https://docs.google.com/spreadsheets/d/XXXXXXXXXXXXXXXXXXXX/edit#gid=0"
+  const ss = SpreadsheetApp.openByUrl(sheet_url)
+  const test = false
+  const default_fields = "purchase, add_to_cart, purchase CV"
+  const default_lead = "purchase"
+  
+  const accounts = ss.getSheetByName("Акаунти").getDataRange().getValues()
+  
+  const dayOfTheWeek = (new Date(Date.now() - 1 * 86400000 + 10*3600000)).getDay()
+
+  if ((dayOfTheWeek==5||dayOfTheWeek==6)&&!test) {
+  Logger.log(`Ігноруємо бо субота чи неділя`)
+  return
+  } 
+  const {start, end, tab_name} = getDates()
+  const sheet=ss.insertSheet(test?Date.now().toString():tab_name)
+
+
+  let row=1
+  let len=0
+  for (let [account_id,fields_str,lead] of accounts){
+  fields_str =  fields_str != "" && typeof fields_str !== "undefined"? fields_str : default_fields
+  const lfields = fields_str.split(", ")
+  lead = lead!="" && typeof lead !== "undefined"?lead:default_lead
+  
+  const accountIterator = AdsManagerApp.accounts().withIds([account_id])
+      .get();
+  
+  if (!accountIterator.hasNext()) {
+  Logger.log(`¬ MCC не знайдено ${account_id}`)
+  continue  
+  
+  }  
+      const account=accountIterator.next()
+      AdsManagerApp.select(account)
+      Logger.log(`Починаємо працювати з ${AdsApp.currentAccount().getCustomerId()} - ${AdsApp.currentAccount().getName()}`)
+      const arr1 = getStats(start, lead)
+      const arr2 = getStats(end, lead)
+      Logger.log(arr1)
+      if (len!=0) sheet.getRange(row-1,1,1,len).setBackground("#d9d9d9")
+      //const conv = [...new Set([...arr1.prior,...Object.keys({...arr1.all,...arr2.all})])]
+      const captions = ["Назва акаунту", "Період", "Витрати", "Кліки", "Покази", "CPC", "Конверсії",  "Вартість конверсій", "Рентабельність","CPA",...lfields]
+      const fields = ["spend","clicks","impressions","cpc","conversions","conversionValue","roas","cpa"]
+      Logger.log(lfields)
+      //Logger.log(conv)
+      let line1 = [...fields.map(i=>arr1[i]),...lfields.map(i=>arr1.all[i]||0)]
+      let line2 = [...fields.map(i=>arr2[i]),...lfields.map(i=>arr2.all[i]||0)]
+      const bg = line1.map((v,i)=>v==line2[i]?"#ffffff":v<line2[i]?"#f4cccc":"#d9ead3")
+      const lines = []
+      lines.push(captions)
+      lines.push([AdsApp.currentAccount().getName(),start.name,...line1.map(i=>i.toFixed(2))])
+      lines.push([AdsApp.currentAccount().getName(),end.name,...line2.map(i=>i.toFixed(2))])
+      sheet.getRange(row,1,lines.length,lines[0].length).setValues(lines)
+      sheet.getRange(row+1,3,1,bg.length).setBackgrounds([bg])
+      row+=4
+      len = captions.length
+   
+  } 
+    
+    
+  sheet.setFrozenColumns(1)
+
+}
+
+function getStats(obj, lead) {
+const getCV = ['purchase', 'click_phone', 'form_lead_submit','send_question_chat','binotel_callcracking','binotel_getcall']  
+let result = {}
+
+let searchResults = AdsApp.search(`SELECT metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks, metrics.impressions, metrics.average_cpc FROM customer WHERE segments.date>='${obj.start}' AND segments.date<='${obj.end}' `) 
+for (let row of searchResults)
+{
+result.spend=costMicros(row.metrics.costMicros||0)
+result.conversions = parseFloat(row.metrics.conversions||0)  
+
+result.clicks = parseInt(row.metrics.clicks||0)
+result.impressions = parseInt(row.metrics.impressions||0)
+result.cpc = costMicros(row.metrics.averageCpc||0)
+
+}
+let conversions = {}  
+searchResults = AdsApp.search(`SELECT  segments.conversion_action_name, metrics.all_conversions, metrics.all_conversions_value FROM customer WHERE segments.date>='${obj.start}' AND segments.date<='${obj.end}' `) 
+for (let row of searchResults)
+{
+ //Logger.log(row)
+conversions[row.segments.conversionActionName]=parseFloat(row.metrics.allConversions)
+//if(row.metrics.allConversionsValue!="0.0"&&row.metrics.allConversions!=row.metrics.allConversionsValue)
+if (getCV.indexOf(row.segments.conversionActionName)>-1)  
+conversions[`${row.segments.conversionActionName} CV`]=parseFloat(row.metrics.allConversionsValue)   
+//Logger.log(row)
+}  
+  const conv = parseFloat(conversions[`${lead}`]||0)
+  result.conversionValue = parseFloat(conversions[`${lead} CV`]||0)
+  result.roas = result.spend==0?0:result.conversionValue/result.spend
+  result.cpa = conv==0?0:result.spend/conv
+  result.all = conversions
+  
+  return result
+}  
+
+function getDates() {
+    const today = new Date(Date.now() - 1 * 86400000 + 10*3600000)
+    const dayOfTheWeek = today.getDay()
+    const ndays = dayOfTheWeek==0?6:0
+    const tab_name = Utilities.formatDate(new Date(Date.now() - 1 * 86400000), AdsApp.currentAccount().getTimeZone(), "dd/MM/yyyy") 
+    const start = getDateObj(1+ndays,1)
+    const end = getDateObj(2*(1+ndays),2+ndays)
+    return {start, end, tab_name}
+}
+
+function getDateObj(n1,n2){
+    const start = Utilities.formatDate(new Date(Date.now()  - n1 * 86400000), AdsApp.currentAccount().getTimeZone(), "yyyy-MM-dd")
+    const end = Utilities.formatDate(new Date(Date.now() - n2 * 86400000), AdsApp.currentAccount().getTimeZone(), "yyyy-MM-dd")
+    const name = start==end?`${end.split("-")[2]}.${end.split("-")[1]}.${end.split("-")[0]}`:`${start.split("-")[2]}-${end.split("-")[2]}.${end.split("-")[1]}.${end.split("-")[0]}`
+    return {start, end, name}
+}
+
+function costMicros(cost) {
+    return (parseInt(cost || 0) / 1000000)
+}
